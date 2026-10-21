@@ -3,7 +3,7 @@ name: Release
 # Tag-triggered release: re-runs the gate, packs the extension into a
 # deterministic zip, and attaches it to a GitHub Release. Publishing the zip to
 # the Chrome Web Store is a manual step -- it needs store credentials, see
-# developer.md "Publishing".
+# developer.md "Publishing" (doc/developer.md).
 
 on:
   push:

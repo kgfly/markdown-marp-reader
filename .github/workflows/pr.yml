@@ -84,7 +84,7 @@ jobs:
           fi
 
       # e2e drives the unpacked extension in a real Chrome, which needs a
-      # display-capable runner -- Linux-only by design (see developer.md
+      # display-capable runner -- Linux-only by design (see doc/developer.md
       # "End-to-end tests"). Chrome for Testing is downloaded because branded
       # Chrome >= 137 refuses --load-extension.
       - name: Install Chrome for Testing (Linux only)

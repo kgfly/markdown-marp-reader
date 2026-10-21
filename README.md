@@ -54,7 +54,7 @@ install a zip directly as an unpacked extension.)
 
 ### From the Chrome Web Store
 
-Not published yet. See [developer.md](developer.md#publishing) for the release
+Not published yet. See [doc/developer.md](doc/developer.md#publishing) for the release
 process.
 
 ## Usage
@@ -122,7 +122,7 @@ npm test        # unit tests
 npm run e2e     # real-Chrome end-to-end test (needs Chrome for Testing)
 ```
 
-[developer.md](developer.md) covers the architecture, test tiers, packaging,
+[doc/developer.md](doc/developer.md) covers the architecture, test tiers, packaging,
 publishing to the Chrome Web Store, the PR gate, and troubleshooting.
 
 Third-party licenses are listed in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
