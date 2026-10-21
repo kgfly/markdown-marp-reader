@@ -119,7 +119,7 @@ npm run build   # -> dist/, the unpacked extension
 npm run dev     # rebuild on change
 npm run check   # lint + format + coverage tests + build + validate
 npm test        # unit tests
-npm run e2e     # real-Chrome end-to-end test (Linux/macOS; see developer.md)
+npm run e2e     # real-Chrome end-to-end test (needs Chrome for Testing)
 ```
 
 [developer.md](developer.md) covers the architecture, test tiers, packaging,
