@@ -1,0 +1,16 @@
+node_modules/
+dist/
+release/
+coverage/
+*.zip
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.log
+
+# Chrome for Testing downloaded by npm run e2e:chrome
+.chrome/
+chrome/

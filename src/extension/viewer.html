@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en" data-theme="auto">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>Markdown &amp; Marp Reader</title>
+    <link rel="stylesheet" href="vendor/katex/katex.min.css" />
+    <link rel="stylesheet" href="viewer.css" />
+  </head>
+  <body>
+    <div class="app" id="app">
+      <header class="toolbar">
+        <div class="toolbar__start">
+          <button
+            id="sidebar-toggle"
+            class="icon-button"
+            type="button"
+            title="Toggle file list"
+            aria-expanded="true"
+          >
+            ☰
+          </button>
+          <img class="brand-icon" src="icons/icon32.png" alt="" width="28" height="28" />
+          <div class="doc-meta">
+            <h1 id="doc-title">Markdown &amp; Marp Reader</h1>
+            <p id="doc-path" title=""></p>
+          </div>
+        </div>
+
+        <div class="toolbar__actions">
+          <div class="segmented" role="group" aria-label="View mode">
+            <button id="mode-doc" type="button" aria-pressed="true">Document</button>
+            <button id="mode-slides" type="button" aria-pressed="false">Slides</button>
+            <button id="mode-source" type="button" aria-pressed="false">Source</button>
+          </div>
+
+          <div class="slide-nav" role="group" aria-label="Slide navigation">
+            <button
+              id="prev-slide"
+              type="button"
+              title="Previous slide (←)"
+              aria-label="Previous slide"
+            >
+              ‹
+            </button>
+            <span id="slide-counter" aria-live="polite">0 / 0</span>
+            <button
+              id="next-slide"
+              type="button"
+              title="Next slide (→)"
+              aria-label="Next slide"
+            >
+              ›
+            </button>
+            <button
+              id="present"
+              type="button"
+              title="Present fullscreen (F)"
+              aria-pressed="false"
+            >
+              Present
+            </button>
+          </div>
+
+          <button id="theme-toggle" class="pill" type="button">Theme: auto</button>
+          <button id="open-file" class="primary" type="button">Open file</button>
+          <button id="open-folder" type="button">Open folder</button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar" id="sidebar" hidden>
+          <div class="sidebar__head">
+            <span>Files</span>
+            <span class="badge" id="file-count">0</span>
+          </div>
+          <input
+            id="file-filter"
+            class="file-filter"
+            type="search"
+            placeholder="Filter files…"
+            aria-label="Filter files"
+            hidden
+          />
+          <nav id="file-list" class="file-list" aria-label="Markdown files"></nav>
+        </aside>
+
+        <main class="stage" id="stage">
+          <div class="notice" id="notice" hidden>
+            <p id="notice-text"></p>
+            <button id="notice-action" class="link-button" type="button" hidden>
+              Open folder
+            </button>
+          </div>
+
+          <section id="dropzone" class="dropzone">
+            <div class="dropzone__card">
+              <div class="dropzone__glyph" aria-hidden="true">M↓</div>
+              <h2>Preview Markdown &amp; Marp decks</h2>
+              <p>
+                Drop a <code>.md</code> file or an entire folder. Images, KaTeX math, code
+                blocks and Marp slides are rendered locally. Nothing is uploaded.
+              </p>
+              <div class="dropzone__actions">
+                <button id="drop-open-file" class="primary" type="button">
+                  Choose a file
+                </button>
+                <button id="drop-open-folder" type="button">Choose a folder</button>
+              </div>
+              <p class="hint">
+                Opening a folder lets relative image paths resolve. You can also drag
+                files anywhere in this window.
+              </p>
+            </div>
+          </section>
+
+          <article id="doc-view" class="markdown-body" hidden></article>
+
+          <section id="slides-view" class="slides-view" hidden>
+            <div class="slides-shell">
+              <iframe
+                id="slides-frame"
+                title="Marp slide preview"
+                sandbox="allow-same-origin"
+                tabindex="-1"
+              ></iframe>
+              <div id="slide-shield" aria-hidden="true"></div>
+            </div>
+            <p class="present-hint">← → navigate · F fullscreen · click to advance</p>
+            <div class="present-bar">
+              <button id="present-prev" type="button" aria-label="Previous slide">
+                ‹ Prev
+              </button>
+              <span id="present-counter">1 / 1</span>
+              <button id="present-next" type="button" aria-label="Next slide">
+                Next ›
+              </button>
+              <button id="present-exit" type="button">Exit</button>
+            </div>
+          </section>
+
+          <section id="source-view" class="source-view" hidden>
+            <pre><code id="source-code"></code></pre>
+          </section>
+        </main>
+      </div>
+
+      <div id="drop-overlay" class="drop-overlay" aria-hidden="true">
+        <div>Drop Markdown or a folder</div>
+      </div>
+      <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+      <input
+        id="file-input"
+        type="file"
+        accept=".md,.markdown,.mdown,text/markdown"
+        hidden
+      />
+      <input id="folder-input" type="file" webkitdirectory directory multiple hidden />
+    </div>
+    <script src="viewer.js"></script>
+  </body>
+</html>

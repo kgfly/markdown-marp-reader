@@ -1,0 +1,273 @@
+#!/usr/bin/env node
+/**
+ * End-to-end smoke test: loads the unpacked extension in Chrome, opens a
+ * Markdown document and a Marp deck through the real file input, and asserts
+ * that math, images and slide navigation work without page errors.
+ *
+ * Chrome does not allow extensions in old headless mode, so this uses the
+ * current headless implementation (Chrome >= 112). Set CHROME_PATH to point at
+ * a specific binary; otherwise common install locations are probed.
+ */
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import puppeteer from 'puppeteer-core';
+
+import { buildExtension } from './build.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const DIST = path.join(ROOT, 'dist');
+
+const PNG =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==';
+
+const DOC = `# End-to-end
+
+Inline math $e^{i\\pi}+1=0$ and a display block:
+
+$$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$
+
+![pixel](${PNG})
+
+| Feature | Works |
+| --- | --- |
+| math | yes |
+`;
+
+const DECK = `---
+marp: true
+theme: default
+---
+
+# Slide one
+
+$e^{i\\pi}$
+
+---
+
+# Slide two
+
+- second
+`;
+
+async function findChrome() {
+  if (process.env.CHROME_PATH) return process.env.CHROME_PATH;
+
+  const bundled = await findBundledChrome(path.join(ROOT, '.chrome'));
+  if (bundled) return bundled;
+
+  const candidates = [
+    '/usr/bin/google-chrome',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+    'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
+  ];
+  for (const candidate of candidates) {
+    try {
+      execFileSync(candidate, ['--version'], { stdio: 'ignore' });
+      return candidate;
+    } catch {
+      // Try the next location.
+    }
+  }
+  throw new Error(
+    'Chrome for Testing was not found. Run `npm run e2e:chrome` or set CHROME_PATH. ' +
+      'Google Chrome branded builds newer than 137 no longer support --load-extension.',
+  );
+}
+
+async function findBundledChrome(directory) {
+  let entries;
+  try {
+    entries = await readdir(directory, { recursive: true, withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isFile() || !/^chrome(?:\.exe)?$/.test(entry.name)) continue;
+    const candidate = path.join(entry.parentPath ?? entry.path, entry.name);
+    if (/(chrome-linux64|chrome-mac|chrome-win)/i.test(candidate)) return candidate;
+  }
+  return null;
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(`Assertion failed: ${message}`);
+}
+
+async function main() {
+  if (!process.argv.includes('--skip-build')) await buildExtension({ dev: false });
+
+  const chromePath = await findChrome();
+  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'mmr-e2e-'));
+  const docPath = path.join(tempDir, 'doc.md');
+  const deckPath = path.join(tempDir, 'deck.md');
+  await writeFile(docPath, DOC);
+  await writeFile(deckPath, DECK);
+
+  const browser = await puppeteer.launch({
+    executablePath: chromePath,
+    headless: true,
+    args: [
+      `--disable-extensions-except=${DIST}`,
+      `--load-extension=${DIST}`,
+      '--no-sandbox',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+    ],
+  });
+
+  const errors = [];
+  try {
+    const worker = await browser.waitForTarget(
+      (target) =>
+        target.type() === 'service_worker' &&
+        target.url().startsWith('chrome-extension://'),
+      { timeout: 15_000 },
+    );
+    const extensionId = new URL(worker.url()).host;
+
+    const page = await browser.newPage();
+    page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
+    page.on('console', (message) => {
+      if (message.type() === 'error') errors.push(`console: ${message.text()}`);
+    });
+
+    await page.goto(`chrome-extension://${extensionId}/viewer.html`, {
+      waitUntil: 'domcontentloaded',
+    });
+    await page.waitForSelector('#dropzone');
+    assert((await page.title()).includes('Markdown & Marp Reader'), 'viewer title');
+
+    await (await page.$('#file-input')).uploadFile(docPath);
+    await page.waitForFunction(
+      () => document.querySelector('#doc-view h1')?.textContent?.trim() === 'End-to-end',
+      { timeout: 15_000 },
+    );
+
+    const docState = await page.evaluate(() => ({
+      katex: document.querySelectorAll('#doc-view .katex').length,
+      display: document.querySelectorAll('#doc-view .katex-display').length,
+      image: document.querySelector('#doc-view img')?.getAttribute('src') ?? '',
+      table: Boolean(document.querySelector('#doc-view table')),
+      docHidden: document.querySelector('#doc-view').hidden,
+      fileCount: document.querySelector('#file-count').textContent,
+    }));
+    assert(docState.katex >= 2, 'inline and display math rendered with KaTeX');
+    assert(docState.display >= 1, 'display math keeps its block layout');
+    assert(docState.image.startsWith('data:image/png'), 'data image kept');
+    assert(docState.table, 'GFM table rendered');
+    assert(!docState.docHidden, 'document view visible');
+    assert(docState.fileCount === '1', 'file counter updated');
+
+    await (await page.$('#file-input')).uploadFile(deckPath);
+    await page.waitForFunction(
+      () => document.querySelector('#slide-counter')?.textContent === '1 / 2',
+      { timeout: 15_000 },
+    );
+
+    const frame = page.frames().find((candidate) => candidate.url() === 'about:srcdoc');
+    assert(frame, 'slide iframe document is reachable');
+    assert(
+      (await frame.$$eval('svg[data-marpit-svg]', (nodes) => nodes.length)) === 2,
+      'two Marp slides in the iframe',
+    );
+    assert(
+      (await frame.$$eval('.katex', (nodes) => nodes.length)) >= 1,
+      'KaTeX math inside Marp slides',
+    );
+
+    await page.keyboard.press('ArrowRight');
+    await page.waitForFunction(
+      () => document.querySelector('#slide-counter')?.textContent === '2 / 2',
+      { timeout: 5_000 },
+    );
+    const active = await frame.$$eval(
+      'svg[data-marpit-svg]',
+      (nodes) => nodes.filter((node) => node.classList.contains('is-active')).length,
+    );
+    assert(active === 1, 'exactly one active slide after navigating');
+
+    await page.keyboard.press('Home');
+    await page.waitForFunction(
+      () => document.querySelector('#slide-counter')?.textContent === '1 / 2',
+      { timeout: 5_000 },
+    );
+
+    // Drop a folder: two files, with a relative image next to the Markdown.
+    await page.evaluate(() => {
+      const pngBytes = Uint8Array.from(
+        atob(
+          'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+        ),
+        (char) => char.charCodeAt(0),
+      );
+      const markdown = new File(['# Folder doc\n\n![local](pixel.png)\n'], 'README.md', {
+        type: 'text/markdown',
+      });
+      const image = new File([pngBytes], 'pixel.png', { type: 'image/png' });
+      const entryFor = (file) => ({
+        isFile: true,
+        name: file.name,
+        file: (resolve) => resolve(file),
+      });
+      const transfer = {
+        types: ['Files'],
+        files: [markdown, image],
+        items: [markdown, image].map((file) => ({
+          webkitGetAsEntry: () => entryFor(file),
+        })),
+      };
+      const event = new Event('drop', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'dataTransfer', { value: transfer });
+      window.dispatchEvent(event);
+    });
+
+    // Timer polling: rAF polling can stall once the slide iframe is replaced.
+    try {
+      await page.waitForFunction(
+        () =>
+          document.querySelector('#doc-view h1')?.textContent?.trim() === 'Folder doc',
+        { timeout: 15_000, polling: 100 },
+      );
+    } catch (error) {
+      const state = await page.evaluate(() => ({
+        path: document.querySelector('#doc-path')?.textContent,
+        toast: document.querySelector('#toast')?.textContent,
+        body: document.body.className,
+        noticeHidden: document.querySelector('#notice')?.hidden,
+        doc: document.querySelector('#doc-view')?.innerHTML.slice(0, 200),
+      }));
+      throw new Error(`Folder drop did not render: ${JSON.stringify(state)}`, {
+        cause: error,
+      });
+    }
+    const dropped = await page.evaluate(() => ({
+      image: document.querySelector('#doc-view img')?.getAttribute('src') ?? '',
+      path: document.querySelector('#doc-path').textContent,
+      missingNotice: !document.querySelector('#notice').hidden,
+    }));
+    assert(dropped.image.startsWith('blob:'), 'relative image resolved to a blob URL');
+    assert(dropped.path === 'README.md', 'dropped folder opened its README');
+    assert(!dropped.missingNotice, 'no missing-resource notice for a complete folder');
+
+    assert(errors.length === 0, `no page errors (${errors.join('; ')})`);
+    console.log(
+      `E2E passed in Chrome: Markdown + KaTeX + images, Marp 2-slide navigation, folder drop (extension ${extensionId}).`,
+    );
+  } finally {
+    await browser.close();
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

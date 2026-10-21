@@ -1,0 +1,11 @@
+dist/
+release/
+coverage/
+node_modules/
+package-lock.json
+assets/icons/
+*.zip
+
+# Chrome for Testing downloaded by npm run e2e:chrome
+.chrome/
+chrome/

@@ -1,0 +1,116 @@
+name: PR
+
+# Pull-request gate: install, build, lint, format-check, unit tests with a
+# coverage floor, an unpacked-extension validation pass, and a real-Chrome
+# end-to-end run. Once branch protection requires these checks, a red run
+# blocks the merge.
+
+on:
+  pull_request:
+    branches: [main]
+  # Also run on pushes to main so the checks have a baseline history and show
+  # up in the branch-protection status-check picker.
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  # A new push to the same PR cancels the previous, still-running check.
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Test (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v7
+        with:
+          # Single source of truth: package.json declares the supported range
+          # in engines.node; CI pins the current LTS line for reproducible runs.
+          node-version: 22
+          cache: npm
+
+      # `npm ci` (not `npm install`) keeps CI on the lockfile and fails when
+      # package.json and package-lock.json have drifted apart.
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build extension
+        run: npm run build
+
+      - name: Lint
+        run: npm run lint
+
+      # Formatting is platform-independent - checking it on all three OSes
+      # would just be the same assertion three times (and CRLF line endings
+      # can make Prettier noisy on Windows). Check it once, on Linux.
+      - name: Format check
+        if: runner.os == 'Linux'
+        run: npm run format:check
+
+      # The build must be a valid unpacked MV3 extension: manifest checks,
+      # referenced files, icon signatures, no remote/inline scripts.
+      - name: Validate built extension
+        run: npm run validate
+
+      - name: Unit tests with coverage
+        run: npm run test:coverage
+
+      # The coverage gate is enforced on Linux only, deliberately: it is the
+      # runner whose toolchain we control most tightly, and the unit suite is
+      # the same everywhere. The thresholds also live in vitest.config.js, so a
+      # local `npm run test:coverage` fails locally for the same reason.
+      - name: Enforce minimum line coverage
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          MIN_COVERAGE: '80'
+        run: |
+          pct=$(jq -r '.total.lines.pct' coverage/coverage-summary.json)
+          echo "Total line coverage: ${pct}% (minimum: ${MIN_COVERAGE}%)"
+          echo "### Coverage: ${pct}% (min ${MIN_COVERAGE}%)" >> "$GITHUB_STEP_SUMMARY"
+          if ! awk -v p="$pct" -v m="$MIN_COVERAGE" 'BEGIN { exit !((p+0) >= (m+0)) }'; then
+            echo "::error::Coverage ${pct}% is below the required ${MIN_COVERAGE}%"
+            exit 1
+          fi
+
+      # e2e drives the unpacked extension in a real Chrome, which needs a
+      # display-capable runner -- Linux-only by design (see developer.md
+      # "End-to-end tests"). Chrome for Testing is downloaded because branded
+      # Chrome >= 137 refuses --load-extension.
+      - name: Install Chrome for Testing (Linux only)
+        if: runner.os == 'Linux'
+        run: npm run e2e:chrome
+
+      - name: End-to-end tests (Linux only)
+        if: runner.os == 'Linux'
+        run: npm run e2e -- --skip-build
+
+      - name: Package extension zip (Linux only)
+        if: runner.os == 'Linux'
+        run: npm run package -- --skip-build
+
+      - name: Upload coverage report
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-report
+          path: coverage/
+          if-no-files-found: error
+
+      - name: Upload extension zip
+        if: runner.os == 'Linux'
+        uses: actions/upload-artifact@v6
+        with:
+          name: extension-zip
+          path: release/*.zip
+          if-no-files-found: error
