@@ -9,6 +9,7 @@ no context switching. Everything is rendered locally in the browser: no server,
 no upload, no account.
 
 [![PR gate](https://github.com/kgfly/markdown-marp-reader/actions/workflows/pr.yml/badge.svg)](https://github.com/kgfly/markdown-marp-reader/actions/workflows/pr.yml)
+[![Nightly](https://github.com/kgfly/markdown-marp-reader/actions/workflows/nightly.yml/badge.svg)](https://github.com/kgfly/markdown-marp-reader/actions/workflows/nightly.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 ## Features
@@ -18,6 +19,9 @@ no upload, no account.
   the page.
 - **Math** — inline `$e^{i\pi}+1=0$` and display `$$\int_0^1 x^2\,dx$$` math
   via KaTeX, with fonts bundled in the extension so it works offline.
+- **Mermaid diagrams** — fenced `mermaid` blocks render as flowcharts,
+  sequence diagrams and the other Mermaid diagram types, following the
+  light/dark theme.
 - **Images and other local assets** — `![](diagram.png)` resolves next to the
   document. Open (or drop) the **whole folder** and the reader maps every
   relative path — images, SVG, video, audio, CSS `url()` references — to the
@@ -33,9 +37,10 @@ no upload, no account.
   `.pdf`, and a Marp deck into navigable HTML slides, a PDF, or a PowerPoint
   `.pptx`. Images, styles and KaTeX fonts are embedded in the exported HTML, so
   the file keeps working when it is opened elsewhere.
-- **Comfort features** — file browser with filter, Document / Slides / Source
-  views, auto/light/dark theme, and a notice when a referenced asset is missing
-  from the opened folder.
+- **Comfort features** — file browser with filter, an outline of the current
+  document's headings, Document / Source views (plus Slides for Marp decks),
+  auto/light/dark theme, and a notice when a referenced asset is missing from
+  the opened folder.
 - **Private by construction** — Manifest V3 with **zero permissions** (not even
   host permissions), no telemetry, no remote code. The extension itself makes
   no network requests; external links and remote images in a document behave
@@ -70,6 +75,10 @@ Open the listing, click **Add to Chrome**, then confirm with **Add extension**.
 replace the folder at the same path), then click the refresh icon on the
 extension card in `chrome://extensions` and reload any open reader tab.
 
+> **Bleeding edge:** [nightly pre-releases](https://github.com/kgfly/markdown-marp-reader/releases?q=nightly)
+> are built from `main` once a day whenever it changes. Install them the same
+> way (extract, then **Load unpacked**); they carry no Chrome Web Store review.
+
 > Chrome needs a folder, not a zip, for **Load unpacked**. To get started
 > quickly, extracting to `~/markdown-marp-reader/` is fine.
 
@@ -98,8 +107,9 @@ above. Do not load the repository root or `release/` — only `dist/` contains
 - **Open file** (`Ctrl`/`Cmd`+`O`) reads a single Markdown file.
 - **Open folder** is the best choice when the document references images or
   other local files: the folder becomes the document root and its whole tree
-  appears in the file browser. Chrome asks for permission to view the folder;
-  the files are read locally and nothing is uploaded.
+  appears in the file browser. Chrome asks **"Upload N files to this site?"** —
+  that wording is the browser's; nothing is uploaded or copied. The files are
+  read locally and stay in the tab.
 - You can also drag a file or a folder anywhere onto the reader window.
 
 ### Read Markdown

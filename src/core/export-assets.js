@@ -1,6 +1,7 @@
 import { bytesToBase64, inlineCssUrls, mimeFromPath, preferWoff2 } from './export.js';
 import { addHeadingIds, renderMarkdown } from './markdown.js';
 import { renderMarp } from './marp.js';
+import { renderMermaidBlocks } from './mermaid.js';
 import { isMarkdownPath, joinPath, normalizePath, resolveResourcePath } from './paths.js';
 import { MEDIA_ATTRIBUTES } from './resources.js';
 
@@ -216,6 +217,9 @@ export async function prepareDocumentExport({
   );
   doc.body.innerHTML = rendered.html;
   addHeadingIds(doc.body);
+
+  // Mermaid labels are rendered as SVG text so rasterised PDFs stay faithful.
+  await renderMermaidBlocks(doc.body, { htmlLabels: false, keepSource: false });
 
   const inlined = await inlineBundleResources(doc.body, { markdownPath, bundle });
   const css = await getKatexExportCss();

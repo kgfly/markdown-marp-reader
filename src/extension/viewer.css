@@ -366,6 +366,66 @@ button[aria-expanded='true'] {
   display: none;
 }
 
+.toc {
+  display: flex;
+  flex-direction: column;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 45%;
+  margin: -2px 0 2px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+}
+
+.toc__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 0 4px 6px;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.toc-list {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-height: 0;
+  margin: 0 -4px;
+  padding: 0 4px 4px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+}
+
+.toc-link {
+  --toc-indent: 0px;
+  display: block;
+  padding: 4px 8px 4px calc(8px + var(--toc-indent));
+  border-radius: 6px;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.35;
+  text-decoration: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.toc-link:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.toc-link.is-active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 650;
+}
+
 .sidebar__head {
   display: flex;
   align-items: center;
@@ -434,8 +494,10 @@ button[aria-expanded='true'] {
 
 .file-list {
   display: flex;
+  flex: 1 1 auto;
   flex-direction: column;
   gap: 2px;
+  min-height: 0;
   overflow-y: auto;
   margin: 0 -4px;
   padding: 0 4px 8px;
@@ -786,6 +848,18 @@ body[data-mode='slides'] .stage {
   min-height: 56px;
   border: 2px dashed var(--danger);
   background: var(--danger-soft);
+}
+
+.markdown-body .mermaid-diagram {
+  display: flex;
+  justify-content: center;
+  margin: 1.6em 0;
+  overflow-x: auto;
+}
+
+.markdown-body .mermaid-diagram svg {
+  max-width: 100%;
+  height: auto;
 }
 
 .markdown-body table {

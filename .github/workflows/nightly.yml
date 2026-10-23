@@ -1,0 +1,141 @@
+name: Nightly
+
+# Builds the extension zip once a day, but ONLY if `main` actually moved since
+# the last nightly. Each nightly is published as its own dated pre-release
+# (nightly-YYYYMMDD); the 3 most recent are kept and anything older is deleted,
+# so the release list stays tidy.
+#
+# Nightly builds are development snapshots: the manifest keeps the current
+# package.json version, only the zip filename carries the nightly date.
+
+on:
+  schedule:
+    - cron: '0 9 * * *' # 09:00 UTC daily
+  workflow_dispatch:
+    inputs:
+      force:
+        description: 'Build even if there are no new commits since the last nightly.'
+        type: boolean
+        default: false
+
+permissions:
+  contents: write # required to create/delete releases and tags
+
+concurrency:
+  group: nightly
+  cancel-in-progress: false
+
+jobs:
+  check:
+    name: Check for new commits
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.check.outputs.changed }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          set -euo pipefail
+          echo "tag=nightly-$(date -u +%Y%m%d)" >> "$GITHUB_OUTPUT"
+
+          if [ "${FORCE}" = "true" ]; then
+            echo "Manual run with force=true; building regardless."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # Find the most recent existing nightly release and compare the
+          # commit it was built from against the current HEAD.
+          last_tag=$(gh release list --limit 100 --json tagName \
+            --jq '[.[] | select(.tagName | startswith("nightly-"))] | sort_by(.tagName) | reverse | .[0].tagName // empty')
+
+          if [ -z "$last_tag" ]; then
+            echo "No previous nightly release found; this is the first one."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          last_sha=$(git rev-list -n 1 "refs/tags/$last_tag" 2>/dev/null || echo "")
+          head_sha=$(git rev-parse HEAD)
+          echo "Last nightly ($last_tag): ${last_sha:-unknown}"
+          echo "Current HEAD:            $head_sha"
+
+          if [ "$last_sha" = "$head_sha" ]; then
+            echo "No new commits since the last nightly; skipping the build."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New commits detected; building."
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  package:
+    needs: check
+    if: needs.check.outputs.changed == 'true'
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.check.outputs.tag }}
+
+  publish:
+    name: Publish nightly release
+    needs: [check, package]
+    if: needs.check.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create/delete releases and tags
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: extension-zip
+          path: staging
+
+      - name: Collect release assets and checksums
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          find staging -type f -name '*.zip' -exec mv -t dist/ {} +
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      - name: Publish dated pre-release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.check.outputs.tag }}
+          name: Nightly ${{ needs.check.outputs.tag }}
+          prerelease: true
+          target_commitish: ${{ github.sha }}
+          body: |
+            Automated nightly build from `${{ github.sha }}`.
+
+            This is an **unpacked Chrome extension** (Manifest V3) built from
+            the current `main`, not a Chrome Web Store release. Extract the zip,
+            then open `chrome://extensions` → enable **Developer mode** →
+            **Load unpacked** and select the extracted folder.
+          files: dist/*
+
+      # Keep the 3 most recent nightlies; delete older releases AND their tags.
+      - name: Prune old nightlies (keep last 3)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          keep=3
+          mapfile -t old < <(gh release list --limit 100 --json tagName \
+            --jq '[.[] | select(.tagName | startswith("nightly-")) | .tagName] | sort | reverse | .['"$keep"':][]')
+
+          if [ ${#old[@]} -eq 0 ]; then
+            echo "Nothing to prune; $keep or fewer nightlies exist."
+            exit 0
+          fi
+
+          for tag in "${old[@]}"; do
+            echo "Deleting old nightly: $tag"
+            gh release delete "$tag" --yes --cleanup-tag
+          done

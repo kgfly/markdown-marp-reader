@@ -28,6 +28,7 @@
     "katex": "^0.17.0",
     "marked": "^17.0.0",
     "marked-katex-extension": "^5.1.6",
+    "mermaid": "^11.17.2",
     "pptxgenjs": "^4.0.1"
   },
   "devDependencies": {

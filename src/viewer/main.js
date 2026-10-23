@@ -15,10 +15,10 @@ import {
 import { FileBundle, pathForFile, pickInitialMarkdown } from '../core/file-bundle.js';
 import { addHeadingIds, renderMarkdown } from '../core/markdown.js';
 import { buildSlideDocument, renderMarp } from '../core/marp.js';
+import { mermaidTheme, renderMermaidBlocks } from '../core/mermaid.js';
 import { isMarkdownPath, resolveResourcePath } from '../core/paths.js';
 import { rewriteResourceUrls } from '../core/resources.js';
 import { collectDroppedFiles } from '../ui/drop.js';
-import { pickDirectory } from '../ui/folder-picker.js';
 import { ancestorPaths, buildFileTree, fileKind, fileLabel } from '../ui/file-tree.js';
 import {
   clampIndex,
@@ -26,6 +26,9 @@ import {
   formatSlideCounter,
   stepIndex,
 } from '../ui/slide-state.js';
+import { collectTocEntries, layoutToc, pickActiveTocIndex } from '../ui/toc.js';
+
+const TOC_ACTIVE_OFFSET = 80;
 
 const THEME_CYCLE = ['auto', 'light', 'dark'];
 const THEME_LABEL = { auto: 'Theme: auto', light: 'Theme: light', dark: 'Theme: dark' };
@@ -44,6 +47,8 @@ const state = {
   toastTimer: 0,
   sidebarOpen: readSidebarOpen(),
   expandedDirs: new Set(),
+  tocEntries: [],
+  tocActiveId: '',
 };
 
 const el = {};
@@ -56,6 +61,7 @@ function init() {
   applySidebarState();
   bindEvents();
   renderFileList();
+  renderToc();
   updateModeButtons();
   showView('empty');
 }
@@ -72,6 +78,9 @@ function cacheElements() {
     'sidebar',
     'sidebar-toggle',
     'sidebar-close',
+    'toc',
+    'toc-list',
+    'toc-count',
     'browser-empty',
     'browser-open-folder',
     'doc-title',
@@ -154,6 +163,8 @@ function bindEvents() {
   el.sidebarToggle.addEventListener('click', toggleSidebar);
   el.sidebarClose?.addEventListener('click', () => setSidebarOpen(false));
   el.fileList.addEventListener('click', handleFileListClick);
+  el.tocList?.addEventListener('click', handleTocClick);
+  el.stage.addEventListener('scroll', scheduleTocSpy, { passive: true });
 
   el.fileFilter.addEventListener('input', renderFileList);
   el.slideShield.addEventListener('click', () => {
@@ -179,6 +190,10 @@ function bindEvents() {
   });
 
   window.addEventListener('resize', resizeSlideFrame);
+  window.addEventListener('resize', scheduleTocSpy);
+  window.matchMedia?.('(prefers-color-scheme: dark)').addEventListener?.('change', () => {
+    if (state.theme === 'auto') renderDocumentMermaid();
+  });
   window.addEventListener('keydown', handleKeydown);
   window.addEventListener('beforeunload', () => state.bundle?.release());
   window.addEventListener('dragover', handleDragOver);
@@ -189,41 +204,11 @@ function bindEvents() {
   el.slidesFrame.addEventListener('load', () => syncSlideFrame(false));
 }
 
-let folderPickerBusy = false;
-
-async function chooseFolder() {
-  if (folderPickerBusy) return;
-  folderPickerBusy = true;
-  try {
-    const result = await pickDirectory();
-
-    if (!result.supported) {
-      // Older browsers: the hidden <input webkitdirectory> still works.
-      el.folderInput.click();
-      return;
-    }
-    if (result.cancelled) return;
-
-    if (result.error?.name === 'SecurityError') {
-      // The context blocks the directory picker; use the input instead.
-      el.folderInput.click();
-      return;
-    }
-
-    if (result.entries.length === 0) {
-      showToast(
-        result.error
-          ? `Could not read that folder: ${result.error.message}. Try dragging it onto the window instead.`
-          : 'That folder contains no readable files.',
-        'error',
-      );
-      return;
-    }
-
-    openEntries(result.entries);
-  } finally {
-    folderPickerBusy = false;
-  }
+function chooseFolder() {
+  // The File System Access picker asks to "view and copy files", which reads
+  // like the extension copies data. A native directory input opens without
+  // that prompt and this viewer only ever reads the selected files.
+  el.folderInput.click();
 }
 
 function openFiles(files) {
@@ -277,6 +262,10 @@ function resetDocument() {
   document.title = 'Markdown & Marp Reader';
   document.body.classList.remove('has-document');
   el.docView.replaceChildren();
+  state.tocEntries = [];
+  state.tocActiveId = '';
+  mermaidRun += 1;
+  renderToc();
   el.sourceCode.textContent = '';
   el.slidesFrame.removeAttribute('srcdoc');
 
@@ -326,6 +315,7 @@ function renderDocument() {
   const rendered = renderMarkdown(state.text, { filename: state.markdownPath });
   el.docView.innerHTML = rendered.html;
   addHeadingIds(el.docView);
+  renderToc();
 
   const result = rewriteResourceUrls(el.docView, {
     markdownPath: state.markdownPath,
@@ -334,6 +324,7 @@ function renderDocument() {
 
   decorateLinks(el.docView);
   mergeMissing(result.missing);
+  renderDocumentMermaid();
 }
 
 function renderSlides() {
@@ -377,10 +368,140 @@ function renderSource() {
   if (el.sourceCode) el.sourceCode.textContent = state.text;
 }
 
+let tocFrame = 0;
+let mermaidRun = 0;
+
+function renderDocumentMermaid() {
+  mermaidRun += 1;
+  const run = mermaidRun;
+  if (!el.docView || !state.text || state.analysis?.isMarp) return;
+
+  const prefersDark =
+    window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
+  renderMermaidBlocks(el.docView, {
+    theme: mermaidTheme(state.theme, prefersDark),
+    isCancelled: () => run !== mermaidRun,
+    onError: (error) => console.warn('Could not render a Mermaid diagram:', error),
+  }).catch((error) => console.error('Mermaid rendering failed:', error));
+}
+
+/**
+ * Rebuild the outline for the current document. The outline only makes sense
+ * in document mode; slide and source views have no scrollable headings.
+ */
+function renderToc() {
+  if (!el.toc || !el.tocList) return;
+
+  const entries =
+    state.mode === 'doc' && state.text ? layoutToc(collectTocEntries(el.docView)) : [];
+  state.tocEntries = entries;
+  state.tocActiveId = '';
+  el.tocList.replaceChildren();
+  el.toc.hidden = entries.length === 0;
+
+  if (el.tocCount) {
+    el.tocCount.textContent = String(entries.length);
+    el.tocCount.title = `${entries.length} heading${entries.length === 1 ? '' : 's'}`;
+  }
+  if (entries.length === 0) return;
+
+  const fragment = document.createDocumentFragment();
+  for (const entry of entries) {
+    const link = document.createElement('a');
+    link.className = 'toc-link';
+    link.href = `#${entry.id}`;
+    link.dataset.tocId = entry.id;
+    link.textContent = entry.text;
+    link.title = entry.text;
+    link.style.setProperty('--toc-indent', `${entry.depth * 12}px`);
+    fragment.append(link);
+  }
+  el.tocList.append(fragment);
+  updateActiveToc();
+}
+
+function handleTocClick(event) {
+  if (
+    event.button !== 0 ||
+    event.metaKey ||
+    event.ctrlKey ||
+    event.shiftKey ||
+    event.altKey
+  )
+    return;
+  const link =
+    event.target instanceof Element ? event.target.closest('a[data-toc-id]') : null;
+  if (!link || !el.docView) return;
+
+  const id = link.dataset.tocId;
+  const heading = Array.from(el.docView.querySelectorAll('h1, h2, h3, h4, h5, h6')).find(
+    (candidate) => candidate.id === id,
+  );
+  if (!heading) return;
+
+  event.preventDefault();
+  const reduceMotion = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  heading.scrollIntoView?.({
+    behavior: reduceMotion ? 'auto' : 'smooth',
+    block: 'start',
+  });
+  activateTocLink(id);
+}
+
+function scheduleTocSpy() {
+  if (tocFrame) return;
+  tocFrame = window.requestAnimationFrame(() => {
+    tocFrame = 0;
+    updateActiveToc();
+  });
+}
+
+function updateActiveToc() {
+  if (!el.tocList || !el.docView || state.tocEntries.length === 0) return;
+
+  const links = Array.from(el.tocList.querySelectorAll('.toc-link'));
+  if (links.length === 0) return;
+
+  const headings = new Map(
+    Array.from(el.docView.querySelectorAll('h1, h2, h3, h4, h5, h6')).map((heading) => [
+      heading.id,
+      heading,
+    ]),
+  );
+  const stageTop = el.stage.getBoundingClientRect().top;
+  const tops = state.tocEntries.map((entry) => {
+    const heading = headings.get(entry.id);
+    return heading ? heading.getBoundingClientRect().top - stageTop : Infinity;
+  });
+
+  const index = pickActiveTocIndex(tops, TOC_ACTIVE_OFFSET);
+  const active = links[index];
+  if (!active) return;
+  activateTocLink(active.dataset.tocId);
+}
+
+function activateTocLink(id) {
+  if (!el.tocList || !id) return;
+  for (const link of el.tocList.querySelectorAll('.toc-link')) {
+    const isActive = link.dataset.tocId === id;
+    link.classList.toggle('is-active', isActive);
+    if (isActive) {
+      link.setAttribute('aria-current', 'location');
+    } else {
+      link.removeAttribute('aria-current');
+    }
+  }
+
+  if (state.tocActiveId === id) return;
+  state.tocActiveId = id;
+  el.tocList.querySelector('.toc-link.is-active')?.scrollIntoView?.({ block: 'nearest' });
+}
+
 function setMode(mode, { render = true } = {}) {
   state.mode = mode;
   updateModeButtons();
   showView(mode);
+  renderToc();
 
   if (!state.text) return;
 
@@ -408,6 +529,9 @@ function updateModeButtons() {
   setPressed(el.modeDoc, state.mode === 'doc');
   setPressed(el.modeSlides, state.mode === 'slides');
   setPressed(el.modeSource, state.mode === 'source');
+  if (el.modeSlides) {
+    el.modeSlides.hidden = !state.analysis?.isMarp;
+  }
   for (const element of [el.prevSlide, el.nextSlide, el.present, el.slideCounter]) {
     element.hidden = state.mode !== 'slides';
   }
@@ -1064,6 +1188,7 @@ function cycleTheme() {
   const index = THEME_CYCLE.indexOf(state.theme);
   state.theme = THEME_CYCLE[(index + 1) % THEME_CYCLE.length];
   applyTheme();
+  renderDocumentMermaid();
   try {
     localStorage.setItem('mmr-theme', state.theme);
   } catch {

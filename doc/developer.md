@@ -94,15 +94,16 @@ src/
     resources.js             rewrites relative src/href/CSS url() to blob: URLs
     markdown.js              marked + KaTeX + DOMPurify rendering
     marp.js                  Marp Core rendering, slide document + navigation
+    mermaid.js               Mermaid fence rendering after sanitization
     export.js                pure export helpers: file names, CSS url() inlining,
                              standalone HTML builders, page-break maths
     export-assets.js         embeds images/fonts/CSS as data URLs, prepares
                              standalone document and deck exports
     export-render.js         browser-only adapters: html2canvas, jsPDF, PptxGenJS
   ui/drop.js                 drag-and-drop / directory-entry walking
-  ui/folder-picker.js        File System Access directory picker with fallback
   ui/file-tree.js            folder-tree building and file-type labels
   ui/slide-state.js          slide index stepping
+  ui/toc.js                  heading-outline collection and active-heading picking
   viewer/main.js             viewer controller (DOM, keyboard, modes, theme)
   extension/                 static files copied verbatim into dist/
     manifest.json            Manifest V3, zero permissions
@@ -321,13 +322,38 @@ npm run package -- --skip-build
 ### GitHub Release
 
 `.github/workflows/release.yml` runs when a `vX.Y.Z` tag is pushed (or manually
-via `workflow_dispatch`). It verifies the tag matches `package.json`, runs the
-full `npm run check`, packs the zip and attaches it to a GitHub Release:
+via `workflow_dispatch`). It verifies the tag matches `package.json`, then calls
+the shared `package.yml` workflow (full `npm run check` + zip) and publishes the
+zip together with `SHA256SUMS.txt` as a GitHub Release. Release assets also get
+GitHub build-provenance attestations:
 
 ```sh
 git tag v1.0.0
 git push origin v1.0.0
 ```
+
+Verify a downloaded asset with:
+
+```sh
+gh attestation verify markdown-marp-reader-1.0.0.zip \
+  -R kgfly/markdown-marp-reader
+```
+
+### Nightly builds
+
+`.github/workflows/nightly.yml` runs daily at 09:00 UTC (and manually). It
+builds **only if `main` moved** since the last nightly, then publishes
+`nightly-YYYYMMDD` as a pre-release with a dated asset
+(`markdown-marp-reader-nightly-YYYYMMDD.zip`) and `SHA256SUMS.txt`. The 3 most
+recent nightlies are kept; older releases and tags are deleted automatically.
+
+```sh
+gh workflow run nightly.yml                  # normal run (skips if main is unchanged)
+gh workflow run nightly.yml -f force=true   # build regardless
+```
+
+Nightlies keep the manifest version from `package.json`; only the filename is
+dated. Install them the same way as a release: extract, then **Load unpacked**.
 
 ### Chrome Web Store
 
@@ -363,6 +389,18 @@ and extension zip as artifacts.
 The coverage floor is enforced on Linux only (the unit suite is identical
 everywhere): `MIN_COVERAGE=80` is compared against
 `coverage/coverage-summary.json` and written to the job summary.
+
+### Build workflows
+
+| Workflow      | Trigger                                 | What it does                                                             |
+| ------------- | --------------------------------------- | ------------------------------------------------------------------------ |
+| `pr.yml`      | PRs / pushes to `main`                  | Full gate on 3 OSes; Linux also packages a zip artifact                  |
+| `package.yml` | called by `nightly.yml` / `release.yml` | Reusable: `npm run check` → extension zip → artifact                     |
+| `nightly.yml` | 09:00 UTC daily, or manual              | Builds only if `main` moved; publishes dated pre-release, keeps newest 3 |
+| `release.yml` | tag `v*.*.*`, or manual                 | Full check + zip + checksums + build provenance + GitHub Release         |
+
+`package.yml` is platform-independent (the zip contains no native binaries), so
+nightly and release builds each use a single `ubuntu-latest` runner.
 
 ### Requiring the gate
 

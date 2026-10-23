@@ -32,6 +32,11 @@ $$\\int_0^1 x^2\\,dx = \\frac{1}{3}$$
 
 ![pixel](${PNG})
 
+\`\`\`mermaid
+graph TD
+  A[Start] --> B[Done]
+\`\`\`
+
 | Feature | Works |
 | --- | --- |
 | math | yes |
@@ -192,6 +197,10 @@ async function main() {
       () => document.querySelector('#doc-view h1')?.textContent?.trim() === 'End-to-end',
       { timeout: 15_000 },
     );
+    await page.waitForFunction(
+      () => document.querySelector('#doc-view .mermaid-diagram svg'),
+      { timeout: 15_000 },
+    );
 
     const docState = await page.evaluate(() => ({
       katex: document.querySelectorAll('#doc-view .katex').length,
@@ -200,13 +209,34 @@ async function main() {
       table: Boolean(document.querySelector('#doc-view table')),
       docHidden: document.querySelector('#doc-view').hidden,
       fileCount: document.querySelector('#file-count').textContent,
+      mermaid: Boolean(document.querySelector('#doc-view .mermaid-diagram svg')),
+      slidesHidden: document.querySelector('#mode-slides').hidden,
     }));
     assert(docState.katex >= 2, 'inline and display math rendered with KaTeX');
     assert(docState.display >= 1, 'display math keeps its block layout');
     assert(docState.image.startsWith('data:image/png'), 'data image kept');
     assert(docState.table, 'GFM table rendered');
+    assert(docState.mermaid, 'Mermaid fence rendered as a diagram');
+    assert(docState.slidesHidden, 'Slides button hidden for plain Markdown');
     assert(!docState.docHidden, 'document view visible');
     assert(docState.fileCount === '1', 'file counter updated');
+
+    const toc = await page.evaluate(() => ({
+      hidden: document.querySelector('#toc').hidden,
+      count: document.querySelector('#toc-count').textContent,
+      links: [...document.querySelectorAll('#toc-list .toc-link')].map((link) => ({
+        text: link.textContent,
+        href: link.getAttribute('href'),
+      })),
+    }));
+    assert(!toc.hidden, 'table of contents shown for the document');
+    assert(toc.count === '1', 'table of contents counts headings');
+    assert(
+      toc.links.length === 1 &&
+        toc.links[0].text === 'End-to-end' &&
+        toc.links[0].href === '#end-to-end',
+      'table of contents links to the heading',
+    );
 
     const menu = await page.evaluate(() => ({
       docHidden: document
@@ -223,6 +253,7 @@ async function main() {
     assert(docHtml.startsWith('<!doctype html>'), 'document HTML is standalone');
     assert(docHtml.includes('data:image/png;base64'), 'document image inlined');
     assert(docHtml.includes('data:font/woff2;base64'), 'KaTeX fonts inlined');
+    assert(docHtml.includes('mermaid-diagram'), 'Mermaid diagram exported');
 
     const docPdfFile = await exportAs('pdf', /\.pdf$/);
     const docPdf = await readFile(docPdfFile.path);
@@ -232,6 +263,14 @@ async function main() {
     await page.waitForFunction(
       () => document.querySelector('#slide-counter')?.textContent === '1 / 2',
       { timeout: 15_000 },
+    );
+    assert(
+      await page.evaluate(() => document.querySelector('#toc').hidden),
+      'table of contents hidden in slide mode',
+    );
+    assert(
+      await page.evaluate(() => !document.querySelector('#mode-slides').hidden),
+      'Slides button shown for a Marp deck',
     );
 
     const frame = page.frames().find((candidate) => candidate.url() === 'about:srcdoc');
@@ -343,10 +382,12 @@ async function main() {
       image: document.querySelector('#doc-view img')?.getAttribute('src') ?? '',
       path: document.querySelector('#doc-path').textContent,
       missingNotice: !document.querySelector('#notice').hidden,
+      toc: document.querySelector('#toc-list .toc-link')?.textContent ?? '',
     }));
     assert(dropped.image.startsWith('blob:'), 'relative image resolved to a blob URL');
     assert(dropped.path === 'README.md', 'dropped folder opened its README');
     assert(!dropped.missingNotice, 'no missing-resource notice for a complete folder');
+    assert(dropped.toc === 'Folder doc', 'table of contents follows the opened document');
 
     assert(errors.length === 0, `no page errors (${errors.join('; ')})`);
     console.log(

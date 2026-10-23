@@ -1,0 +1,72 @@
+name: Package
+
+# Reusable workflow (workflow_call): verifies the extension, packs dist/ into
+# the deterministic Chrome extension zip and uploads it as an artifact.
+#
+# Shared by nightly.yml and release.yml so the build/package logic exists
+# exactly once. The zip is platform-independent: one Linux runner is enough.
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: 'Version used in the zip filename (e.g. 1.0.0 or nightly-20261022).'
+        required: true
+        type: string
+      ref:
+        description: 'Git ref to build (defaults to the caller ref).'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    name: Build extension zip (${{ inputs.version }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # lint + format check + coverage tests + build + validate, the same gate
+      # a pull request must pass. A nightly/release therefore never ships
+      # something the PR gate would have rejected.
+      - name: Verify
+        run: npm run check
+
+      - name: Package extension
+        run: npm run package -- --skip-build
+
+      # `npm run package` names the archive after package.json (e.g. 1.0.0).
+      # Nightlies reuse the same manifest version, so name the asset after the
+      # build instead to keep each nightly identifiable.
+      - name: Name the zip after the build
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          zip=$(ls release/*.zip)
+          target="release/markdown-marp-reader-${VERSION}.zip"
+          if [ "$zip" != "$target" ]; then
+            mv "$zip" "$target"
+          fi
+          ls -l release
+
+      - uses: actions/upload-artifact@v6
+        with:
+          name: extension-zip
+          path: release/*.zip
+          if-no-files-found: error
+          retention-days: 7

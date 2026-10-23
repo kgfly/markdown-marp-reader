@@ -1,9 +1,11 @@
 name: Release
 
-# Tag-triggered release: re-runs the gate, packs the extension into a
-# deterministic zip, and attaches it to a GitHub Release. Publishing the zip to
-# the Chrome Web Store is a manual step -- it needs store credentials, see
-# developer.md "Publishing" (doc/developer.md).
+# Tag-triggered official release: re-runs the gate, packs the extension zip,
+# generates a checksum file plus GitHub-native build provenance, and publishes
+# everything as a GitHub Release.
+#
+# Publishing the zip to the Chrome Web Store is a manual step -- it needs store
+# credentials, see doc/developer.md "Publishing".
 
 on:
   push:
@@ -23,65 +25,99 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: Build and publish
+  meta:
+    name: Resolve version
     runs-on: ubuntu-latest
-    permissions:
-      contents: write # create the GitHub Release
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+      version: ${{ steps.v.outputs.version }}
     steps:
       - uses: actions/checkout@v5
         with:
           ref: ${{ inputs.tag || github.ref }}
 
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 22
-          cache: npm
-
-      - name: Resolve tag
-        id: tag
+      - id: v
         shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag || '' }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-          tag="${{ inputs.tag || github.ref_name }}"
+          tag="${INPUT_TAG:-$REF_NAME}"
           if ! echo "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::Tag '$tag' is not of the form vX.Y.Z"
             exit 1
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Check tag matches package version
-        shell: bash
-        env:
-          TAG: ${{ steps.tag.outputs.tag }}
-        run: |
-          set -euo pipefail
           version=$(node -p "require('./package.json').version")
-          if [ "$TAG" != "v$version" ]; then
-            echo "::error::Tag $TAG does not match package.json version $version"
+          if [ "$tag" != "v$version" ]; then
+            echo "::error::Tag $tag does not match package.json version $version"
             exit 1
           fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag (version $version)"
 
-      - name: Verify
-        run: npm run check
+  package:
+    needs: meta
+    uses: ./.github/workflows/package.yml
+    with:
+      version: ${{ needs.meta.outputs.version }}
+      ref: ${{ needs.meta.outputs.tag }}
 
-      - name: Package extension
-        run: npm run package -- --skip-build
+  publish:
+    name: Publish GitHub Release
+    needs: [meta, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release
+      id-token: write # attestation signing
+      attestations: write # record provenance
+    steps:
+      - uses: actions/download-artifact@v7
+        with:
+          name: extension-zip
+          path: staging
 
-      - name: Publish GitHub Release
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          TAG: ${{ steps.tag.outputs.tag }}
+      - name: Collect release assets and checksums
         run: |
           set -euo pipefail
-          zip=$(ls release/*.zip)
-          notes="Unpacked Chrome extension (Manifest V3). Install: chrome://extensions → Developer mode → Load unpacked, or drag the zip into chrome://extensions after extracting it."
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" "$zip" --clobber
-          else
-            gh release create "$TAG" "$zip" --title "$TAG" --notes "$notes" --verify-tag
-          fi
+          mkdir -p dist
+          find staging -type f -name '*.zip' -exec mv -t dist/ {} +
+          cd dist
+          sha256sum * > SHA256SUMS.txt
+          echo "### Release assets" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          cat SHA256SUMS.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      # Free, GitHub-native supply-chain provenance. Verify with:
+      #   gh attestation verify <file> -R kgfly/markdown-marp-reader
+      # This is not Chrome Web Store signing; the zip is still uploaded to the
+      # store manually.
+      - name: Generate build provenance attestations
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'dist/*.zip'
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.meta.outputs.tag }}
+          name: ${{ needs.meta.outputs.tag }}
+          generate_release_notes: true
+          files: dist/*
+          body: |
+            ## Install
+
+            Download `markdown-marp-reader-${{ needs.meta.outputs.version }}.zip`,
+            extract it into a folder you will keep, then open
+            `chrome://extensions` → enable **Developer mode** → **Load unpacked**
+            and select that folder. Chrome needs a folder, not a zip.
+
+            See the [README](https://github.com/kgfly/markdown-marp-reader#install)
+            for details, including how to update.
+
+            Verify provenance:
+            ```sh
+            gh attestation verify <file> -R ${{ github.repository }}
+            ```
