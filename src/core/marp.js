@@ -1,35 +1,52 @@
 import { Marp } from '@marp-team/marp-core';
 
-let engine = null;
+const engines = new Map();
 
 /**
- * Marp Core is configured once. `script: false` keeps generated HTML free of
- * scripts, and KaTeX is used instead of MathJax so the extension stays small
- * and can load fonts from the packaged copy rather than a CDN.
+ * Marp Core is configured once per output shape. `script: false` keeps
+ * generated HTML free of scripts, and KaTeX is used instead of MathJax so the
+ * extension stays small and can load fonts from the packaged copy rather than
+ * a CDN.
+ *
+ * The preview wraps every slide in an SVG `foreignObject` so it scales like a
+ * real deck. Exports instead ask for plain `<section>` slides, which printed
+ * HTML and canvas rasterisation handle far more reliably.
  */
-export function getMarp() {
-  if (!engine) {
-    engine = new Marp({
-      html: true,
-      emoji: false,
-      script: false,
-      math: {
-        lib: 'katex',
-        katexFontPath: 'vendor/katex/fonts/',
-      },
-    });
+export function getMarp({ inlineSVG = true } = {}) {
+  const key = inlineSVG ? 'svg' : 'html';
+  if (!engines.has(key)) {
+    engines.set(
+      key,
+      new Marp({
+        html: true,
+        emoji: false,
+        script: false,
+        inlineSVG,
+        math: {
+          lib: 'katex',
+          katexFontPath: 'vendor/katex/fonts/',
+        },
+      }),
+    );
   }
-  return engine;
+  return engines.get(key);
 }
 
-export function renderMarp(text) {
-  const rendered = getMarp().render(String(text ?? ''));
-  const slideCount = countSlides(rendered.html);
+export function renderMarp(text, options) {
+  const rendered = getMarp(options).render(String(text ?? ''));
+  const inlineSVG = options?.inlineSVG ?? true;
+  const slideCount = inlineSVG
+    ? countSlides(rendered.html)
+    : countSlideSections(rendered.html);
   return {
     html: rendered.html,
     css: rendered.css ?? '',
     slideCount,
   };
+}
+
+export function countSlideSections(html) {
+  return (String(html ?? '').match(/<section\b[^>]*\bid=/gi) ?? []).length;
 }
 
 export function countSlides(html) {

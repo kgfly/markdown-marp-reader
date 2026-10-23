@@ -210,10 +210,84 @@ button.is-active {
   flex-wrap: wrap;
 }
 
+.export {
+  position: relative;
+}
+
+button[aria-expanded='true'] {
+  background: var(--accent-soft);
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.export-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  z-index: 30;
+  min-width: 208px;
+  padding: 6px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 16px 40px rgb(15 23 42 / 18%);
+}
+
+.export-menu__group + .export-menu__group {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.export-menu__group[hidden] {
+  display: none;
+}
+
+.export-menu__label {
+  margin: 2px 8px 4px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+
+.export-menu button {
+  display: block;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  text-align: left;
+  font-size: 13px;
+  color: var(--text);
+}
+
+.export-menu button:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.export-menu button:disabled {
+  color: var(--muted);
+  opacity: 0.6;
+  cursor: default;
+}
+
 .icon-button {
   padding: 6px 9px;
   font-size: 15px;
   line-height: 1;
+  color: var(--muted);
+}
+
+.sidebar-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  font-size: 13px;
   color: var(--muted);
 }
 
@@ -304,6 +378,40 @@ button.is-active {
   color: var(--muted);
 }
 
+.sidebar__head-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.sidebar__close {
+  padding: 1px 6px;
+  border: 0;
+  background: transparent;
+  color: var(--faint);
+  font-size: 16px;
+  line-height: 1;
+}
+
+.sidebar__close:hover {
+  background: var(--panel-soft);
+  color: var(--text);
+}
+
+.sidebar__empty {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 2px 4px;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.sidebar__empty p {
+  margin: 0;
+}
+
 .badge {
   display: inline-grid;
   place-items: center;
@@ -333,48 +441,97 @@ button.is-active {
   padding: 0 4px 8px;
 }
 
-.file-item {
+.file-list__empty {
+  margin: 6px 4px;
+  color: var(--faint);
+  font-size: 12px;
+}
+
+.tree-group {
   display: flex;
   flex-direction: column;
-  align-items: flex-start;
-  gap: 1px;
+  gap: 2px;
+}
+
+.tree-item {
+  --indent: 0px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   width: 100%;
-  padding: 7px 9px;
+  padding: 5px 8px 5px calc(8px + var(--indent));
   border: 0;
   border-radius: 7px;
   background: transparent;
   text-align: left;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text);
 }
 
-.file-item:hover {
+.tree-item:hover {
   background: var(--panel-soft);
 }
 
-.file-item.is-active {
+.tree-item.is-active {
   background: var(--accent-soft);
-}
-
-.file-name {
-  font-size: 13px;
-  font-weight: 600;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.file-item.is-active .file-name {
   color: var(--accent);
 }
 
-.file-dir {
-  font-size: 11px;
-  font-family: var(--mono);
+.tree-dir {
+  font-weight: 600;
+}
+
+.tree-dir.is-static {
+  cursor: default;
+}
+
+.tree-twisty {
+  flex: 0 0 10px;
+  width: 10px;
   color: var(--faint);
-  max-width: 100%;
+  font-size: 10px;
+  transition: transform 120ms ease;
+}
+
+.tree-item[aria-expanded='true'] .tree-twisty {
+  transform: rotate(90deg);
+}
+
+.tree-icon {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  min-width: 24px;
+  height: 16px;
+  padding: 0 3px;
+  border-radius: 4px;
+  background: var(--panel-soft);
+  color: var(--faint);
+  font-family: var(--mono);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.tree-item:hover .tree-icon {
+  background: var(--panel);
+}
+
+.tree-icon[data-kind='markdown'] {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.tree-name {
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.tree-item.is-active .tree-name {
+  font-weight: 650;
 }
 
 .stage {

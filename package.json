@@ -23,9 +23,12 @@
   "dependencies": {
     "@marp-team/marp-core": "^4.1.0",
     "dompurify": "^3.3.0",
+    "html2canvas": "^1.4.1",
+    "jspdf": "^3.0.4",
     "katex": "^0.17.0",
     "marked": "^17.0.0",
-    "marked-katex-extension": "^5.1.6"
+    "marked-katex-extension": "^5.1.6",
+    "pptxgenjs": "^4.0.1"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.0",

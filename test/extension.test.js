@@ -57,6 +57,17 @@ describe('viewer page', () => {
     expect(html).toContain('id="present"');
   });
 
+  it('has a toggleable file browser with an empty state', async () => {
+    const html = await read('src/extension/viewer.html');
+    expect(html).toContain('id="sidebar-toggle"');
+    expect(html).toContain('aria-controls="sidebar"');
+    expect(html).toContain('id="sidebar-close"');
+    expect(html).toContain('id="browser-empty"');
+    expect(html).toContain('id="browser-open-folder"');
+    expect(html).toContain('aria-label="Files in the opened folder"');
+    expect(html).not.toMatch(/<aside[^>]*id="sidebar"[^>]*\bhidden\b/);
+  });
+
   it('has an element for every id the viewer controller caches', async () => {
     const [main, html] = await Promise.all([
       read('src/viewer/main.js'),

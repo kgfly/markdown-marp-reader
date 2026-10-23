@@ -14,12 +14,15 @@
         <div class="toolbar__start">
           <button
             id="sidebar-toggle"
-            class="icon-button"
+            class="sidebar-toggle"
             type="button"
-            title="Toggle file list"
+            title="Toggle file browser (Ctrl+B)"
+            aria-label="Toggle file browser"
+            aria-controls="sidebar"
             aria-expanded="true"
           >
-            ☰
+            <span aria-hidden="true">☰</span>
+            <span class="sidebar-toggle__label">Files</span>
           </button>
           <img class="brand-icon" src="icons/icon32.png" alt="" width="28" height="28" />
           <div class="doc-meta">
@@ -63,6 +66,43 @@
             </button>
           </div>
 
+          <div class="export" id="export-wrap">
+            <button
+              id="export-button"
+              class="pill"
+              type="button"
+              aria-haspopup="menu"
+              aria-expanded="false"
+              title="Open a document to export"
+              disabled
+            >
+              Export
+            </button>
+            <div id="export-menu" class="export-menu" role="menu" hidden>
+              <div class="export-menu__group" data-export-group="doc">
+                <p class="export-menu__label">Document</p>
+                <button type="button" role="menuitem" data-export="html">
+                  HTML (.html)
+                </button>
+                <button type="button" role="menuitem" data-export="pdf">
+                  PDF (.pdf)
+                </button>
+              </div>
+              <div class="export-menu__group" data-export-group="marp">
+                <p class="export-menu__label">Slides</p>
+                <button type="button" role="menuitem" data-export="slides-html">
+                  HTML slides (.html)
+                </button>
+                <button type="button" role="menuitem" data-export="slides-pdf">
+                  PDF slides (.pdf)
+                </button>
+                <button type="button" role="menuitem" data-export="pptx">
+                  PowerPoint (.pptx)
+                </button>
+              </div>
+            </div>
+          </div>
+
           <button id="theme-toggle" class="pill" type="button">Theme: auto</button>
           <button id="open-file" class="primary" type="button">Open file</button>
           <button id="open-folder" type="button">Open folder</button>
@@ -70,10 +110,21 @@
       </header>
 
       <div class="workspace">
-        <aside class="sidebar" id="sidebar" hidden>
+        <aside class="sidebar" id="sidebar">
           <div class="sidebar__head">
-            <span>Files</span>
-            <span class="badge" id="file-count">0</span>
+            <span>File browser</span>
+            <div class="sidebar__head-actions">
+              <span class="badge" id="file-count" title="0 files">0</span>
+              <button
+                id="sidebar-close"
+                class="sidebar__close"
+                type="button"
+                title="Hide file browser"
+                aria-label="Hide file browser"
+              >
+                ×
+              </button>
+            </div>
           </div>
           <input
             id="file-filter"
@@ -83,7 +134,15 @@
             aria-label="Filter files"
             hidden
           />
-          <nav id="file-list" class="file-list" aria-label="Markdown files"></nav>
+          <div class="sidebar__empty" id="browser-empty">
+            <p>No folder open yet. Choose a folder to browse its files.</p>
+            <button id="browser-open-folder" type="button">Open folder</button>
+          </div>
+          <nav
+            id="file-list"
+            class="file-list"
+            aria-label="Files in the opened folder"
+          ></nav>
         </aside>
 
         <main class="stage" id="stage">

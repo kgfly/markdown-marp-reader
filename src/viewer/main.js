@@ -1,10 +1,25 @@
 import { analyzeMarkdown } from '../core/detect.js';
+import {
+  buildDeckHtml,
+  buildDocumentHtml,
+  exportFileName,
+  pdfLayout,
+} from '../core/export.js';
+import { prepareDeckExport, prepareDocumentExport } from '../core/export-assets.js';
+import {
+  deckImagesToPdfBlob,
+  deckImagesToPptxBlob,
+  documentHtmlToPdfBlob,
+  renderDeckSlideImages,
+} from '../core/export-render.js';
 import { FileBundle, pathForFile, pickInitialMarkdown } from '../core/file-bundle.js';
 import { addHeadingIds, renderMarkdown } from '../core/markdown.js';
 import { buildSlideDocument, renderMarp } from '../core/marp.js';
 import { isMarkdownPath, resolveResourcePath } from '../core/paths.js';
 import { rewriteResourceUrls } from '../core/resources.js';
 import { collectDroppedFiles } from '../ui/drop.js';
+import { pickDirectory } from '../ui/folder-picker.js';
+import { ancestorPaths, buildFileTree, fileKind, fileLabel } from '../ui/file-tree.js';
 import {
   clampIndex,
   fitSlideSize,
@@ -25,7 +40,10 @@ const state = {
   slideIndex: 0,
   theme: readTheme(),
   missing: [],
+  exporting: false,
   toastTimer: 0,
+  sidebarOpen: readSidebarOpen(),
+  expandedDirs: new Set(),
 };
 
 const el = {};
@@ -35,6 +53,7 @@ document.addEventListener('DOMContentLoaded', init);
 function init() {
   cacheElements();
   applyTheme();
+  applySidebarState();
   bindEvents();
   renderFileList();
   updateModeButtons();
@@ -52,6 +71,9 @@ function cacheElements() {
     'file-filter',
     'sidebar',
     'sidebar-toggle',
+    'sidebar-close',
+    'browser-empty',
+    'browser-open-folder',
     'doc-title',
     'doc-path',
     'mode-doc',
@@ -70,6 +92,9 @@ function cacheElements() {
     'present-exit',
     'present-counter',
     'theme-toggle',
+    'export-wrap',
+    'export-button',
+    'export-menu',
     'source-view',
     'source-code',
     'dropzone',
@@ -89,10 +114,11 @@ function cacheElements() {
 
 function bindEvents() {
   el.openFile.addEventListener('click', () => el.fileInput.click());
-  el.openFolder.addEventListener('click', () => el.folderInput.click());
+  el.openFolder.addEventListener('click', chooseFolder);
   el.dropOpenFile?.addEventListener('click', () => el.fileInput.click());
-  el.dropOpenFolder?.addEventListener('click', () => el.folderInput.click());
-  el.noticeAction?.addEventListener('click', () => el.folderInput.click());
+  el.dropOpenFolder?.addEventListener('click', chooseFolder);
+  el.browserOpenFolder?.addEventListener('click', chooseFolder);
+  el.noticeAction?.addEventListener('click', chooseFolder);
 
   el.fileInput.addEventListener('change', () => {
     const files = Array.from(el.fileInput.files ?? []);
@@ -125,13 +151,9 @@ function bindEvents() {
   el.presentExit?.addEventListener('click', exitPresent);
   el.present.addEventListener('click', togglePresent);
   el.themeToggle.addEventListener('click', cycleTheme);
-  el.sidebarToggle.addEventListener('click', () => {
-    el.sidebar.classList.toggle('is-hidden');
-    el.sidebarToggle.setAttribute(
-      'aria-expanded',
-      String(!el.sidebar.classList.contains('is-hidden')),
-    );
-  });
+  el.sidebarToggle.addEventListener('click', toggleSidebar);
+  el.sidebarClose?.addEventListener('click', () => setSidebarOpen(false));
+  el.fileList.addEventListener('click', handleFileListClick);
 
   el.fileFilter.addEventListener('input', renderFileList);
   el.slideShield.addEventListener('click', () => {
@@ -147,6 +169,15 @@ function bindEvents() {
     }
   });
 
+  el.exportButton?.addEventListener('click', toggleExportMenu);
+  el.exportMenu?.addEventListener('click', handleExportMenuClick);
+  document.addEventListener('click', (event) => {
+    if (!el.exportWrap?.contains(event.target)) closeExportMenu();
+  });
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape') closeExportMenu();
+  });
+
   window.addEventListener('resize', resizeSlideFrame);
   window.addEventListener('keydown', handleKeydown);
   window.addEventListener('beforeunload', () => state.bundle?.release());
@@ -158,6 +189,43 @@ function bindEvents() {
   el.slidesFrame.addEventListener('load', () => syncSlideFrame(false));
 }
 
+let folderPickerBusy = false;
+
+async function chooseFolder() {
+  if (folderPickerBusy) return;
+  folderPickerBusy = true;
+  try {
+    const result = await pickDirectory();
+
+    if (!result.supported) {
+      // Older browsers: the hidden <input webkitdirectory> still works.
+      el.folderInput.click();
+      return;
+    }
+    if (result.cancelled) return;
+
+    if (result.error?.name === 'SecurityError') {
+      // The context blocks the directory picker; use the input instead.
+      el.folderInput.click();
+      return;
+    }
+
+    if (result.entries.length === 0) {
+      showToast(
+        result.error
+          ? `Could not read that folder: ${result.error.message}. Try dragging it onto the window instead.`
+          : 'That folder contains no readable files.',
+        'error',
+      );
+      return;
+    }
+
+    openEntries(result.entries);
+  } finally {
+    folderPickerBusy = false;
+  }
+}
+
 function openFiles(files) {
   const entries = files.map((file) => ({ file, path: pathForFile(file) }));
   openEntries(entries);
@@ -166,25 +234,56 @@ function openFiles(files) {
 function openEntries(entries) {
   const usable = entries.filter((entry) => entry && entry.file);
   const nextBundle = new FileBundle(usable);
-  const markdownFiles = nextBundle.markdownFiles();
 
-  if (markdownFiles.length === 0) {
+  if (nextBundle.size === 0) {
     nextBundle.release();
-    showToast(
-      'No Markdown files found. Choose a .md/.markdown file or a folder that contains one.',
-      'error',
-    );
+    showToast('No readable files found. Choose a file or a folder to browse.', 'error');
     return;
   }
 
   state.bundle?.release();
   state.bundle = nextBundle;
-  state.marp = null;
-  state.slideIndex = 0;
-  renderFileList();
+  state.expandedDirs.clear();
 
   const initial = pickInitialMarkdown(nextBundle);
-  openDocument(initial);
+  if (initial) {
+    openDocument(initial);
+    return;
+  }
+
+  resetDocument();
+  renderFileList();
+  showToast(
+    'No Markdown files in this selection. Use the file browser on the left to open other files.',
+  );
+}
+
+/**
+ * Clear the current document while keeping the opened file bundle, so a folder
+ * without Markdown can still be browsed.
+ */
+function resetDocument() {
+  state.markdownPath = '';
+  state.text = '';
+  state.analysis = null;
+  state.marp = null;
+  state.mode = 'doc';
+  state.slideIndex = 0;
+  state.missing = [];
+
+  el.docTitle.textContent = 'Markdown & Marp Reader';
+  el.docPath.textContent = '';
+  el.docPath.title = '';
+  document.title = 'Markdown & Marp Reader';
+  document.body.classList.remove('has-document');
+  el.docView.replaceChildren();
+  el.sourceCode.textContent = '';
+  el.slidesFrame.removeAttribute('srcdoc');
+
+  showView('empty');
+  updateModeButtons();
+  updateSlideCounter();
+  updateNotice();
 }
 
 async function openDocument(path) {
@@ -198,6 +297,7 @@ async function openDocument(path) {
     state.marp = null;
     state.slideIndex = 0;
     state.missing = [];
+    for (const dir of ancestorPaths(path)) state.expandedDirs.add(dir);
 
     el.docTitle.textContent = state.analysis.title;
     el.docPath.textContent = path;
@@ -301,6 +401,7 @@ function showView(mode) {
   el.slidesView.classList.toggle('is-visible', hasDocument && mode === 'slides');
   document.body.dataset.mode = mode;
   resizeSlideFrame();
+  updateExportState();
 }
 
 function updateModeButtons() {
@@ -463,6 +564,12 @@ function handleKeydown(event) {
     }
   }
 
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') {
+    event.preventDefault();
+    toggleSidebar();
+    return;
+  }
+
   if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'o') {
     event.preventDefault();
     el.fileInput.click();
@@ -510,37 +617,163 @@ function hasFiles(event) {
 
 function renderFileList() {
   if (!el.fileList) return;
+
+  const scrollTop = el.fileList.scrollTop;
+  const paths = state.bundle?.paths() ?? [];
   const filter = (el.fileFilter?.value ?? '').trim().toLowerCase();
-  const files = state.bundle?.markdownFiles() ?? [];
-  el.fileList.replaceChildren();
 
-  for (const { path } of files) {
-    if (filter && !path.toLowerCase().includes(filter)) continue;
-    const button = document.createElement('button');
-    button.type = 'button';
-    button.className = 'file-item';
-    button.classList.toggle('is-active', path === state.markdownPath);
-    button.title = path;
-    button.setAttribute('aria-current', String(path === state.markdownPath));
-
-    const name = document.createElement('span');
-    name.className = 'file-name';
-    name.textContent = path.split('/').pop();
-
-    const directory = document.createElement('span');
-    directory.className = 'file-dir';
-    directory.textContent = path.includes('/')
-      ? path.slice(0, path.lastIndexOf('/'))
-      : '';
-
-    button.append(name, directory);
-    button.addEventListener('click', () => openDocument(path));
-    el.fileList.append(button);
+  const visibleFiles = new Set(
+    paths.filter((path) => !filter || path.toLowerCase().includes(filter)),
+  );
+  const visibleDirs = new Set();
+  for (const path of visibleFiles) {
+    for (const dir of ancestorPaths(path)) visibleDirs.add(dir);
   }
 
-  el.fileCount.textContent = String(files.length);
-  el.sidebar.hidden = files.length === 0;
-  el.fileFilter.hidden = files.length < 6;
+  el.fileList.replaceChildren();
+  el.fileFilter.hidden = paths.length < 6;
+
+  if (paths.length === 0) {
+    el.fileCount.textContent = '0';
+    el.fileCount.title = '0 files';
+    el.fileList.hidden = true;
+    if (el.browserEmpty) el.browserEmpty.hidden = false;
+    return;
+  }
+
+  el.fileList.hidden = false;
+  if (el.browserEmpty) el.browserEmpty.hidden = true;
+  el.fileCount.textContent = filter
+    ? `${visibleFiles.size}/${paths.length}`
+    : String(paths.length);
+  el.fileCount.title = `${paths.length} file${paths.length === 1 ? '' : 's'}`;
+
+  if (filter && visibleFiles.size === 0) {
+    const empty = document.createElement('p');
+    empty.className = 'file-list__empty';
+    empty.textContent = 'No files match this filter.';
+    el.fileList.append(empty);
+    return;
+  }
+
+  const context = { filter, visibleFiles, visibleDirs };
+  renderTree(buildFileTree(paths), el.fileList, 0, context);
+  el.fileList.scrollTop = scrollTop;
+}
+
+function renderTree(node, container, depth, context) {
+  const { filter, visibleFiles, visibleDirs } = context;
+
+  for (const dir of node.dirs.values()) {
+    if (filter && !visibleDirs.has(dir.path)) continue;
+
+    const expanded = filter ? true : state.expandedDirs.has(dir.path);
+    const row = document.createElement(filter ? 'div' : 'button');
+    row.className = 'tree-item tree-dir';
+    row.title = dir.path;
+    row.style.setProperty('--indent', `${depth * 14}px`);
+
+    if (filter) {
+      row.classList.add('is-static');
+    } else {
+      row.type = 'button';
+      row.dataset.dirPath = dir.path;
+      row.setAttribute('aria-expanded', String(expanded));
+    }
+
+    const twisty = document.createElement('span');
+    twisty.className = 'tree-twisty';
+    twisty.setAttribute('aria-hidden', 'true');
+    twisty.textContent = '▸';
+
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    name.textContent = dir.name;
+
+    row.append(twisty, name);
+    container.append(row);
+
+    if (expanded) {
+      const group = document.createElement('div');
+      group.className = 'tree-group';
+      renderTree(dir, group, depth + 1, context);
+      container.append(group);
+    }
+  }
+
+  for (const file of node.files) {
+    if (filter && !visibleFiles.has(file.path)) continue;
+
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = 'tree-item tree-file';
+    row.dataset.filePath = file.path;
+    row.title = file.path;
+    row.style.setProperty('--indent', `${depth * 14}px`);
+    row.classList.toggle('is-active', file.path === state.markdownPath);
+    if (file.path === state.markdownPath) row.setAttribute('aria-current', 'true');
+
+    const icon = document.createElement('span');
+    icon.className = 'tree-icon';
+    icon.dataset.kind = fileKind(file.path);
+    icon.setAttribute('aria-hidden', 'true');
+    icon.textContent = fileLabel(file.path);
+
+    const name = document.createElement('span');
+    name.className = 'tree-name';
+    name.textContent = file.name;
+
+    row.append(icon, name);
+    container.append(row);
+  }
+}
+
+function handleFileListClick(event) {
+  const target = event.target instanceof Element ? event.target : null;
+  const row = target?.closest('[data-dir-path], [data-file-path]');
+  if (!row) return;
+
+  const dirPath = row.dataset.dirPath;
+  if (dirPath) {
+    toggleDirectory(dirPath);
+    return;
+  }
+
+  const filePath = row.dataset.filePath;
+  if (!filePath) return;
+
+  if (isMarkdownPath(filePath)) {
+    openDocument(filePath);
+    return;
+  }
+
+  const objectUrl = state.bundle?.objectUrl(filePath);
+  if (!objectUrl) {
+    showToast(`Could not open ${filePath}.`, 'error');
+    return;
+  }
+
+  const link = document.createElement('a');
+  link.href = objectUrl;
+  link.target = '_blank';
+  link.rel = 'noopener noreferrer';
+  link.click();
+}
+
+function toggleDirectory(path) {
+  if ((el.fileFilter?.value ?? '').trim()) return;
+
+  if (state.expandedDirs.has(path)) {
+    state.expandedDirs.delete(path);
+  } else {
+    state.expandedDirs.add(path);
+  }
+
+  renderFileList();
+  const row = [...el.fileList.querySelectorAll('[data-dir-path]')].find(
+    (candidate) => candidate.dataset.dirPath === path,
+  );
+  row?.focus();
 }
 
 function decorateLinks(container) {
@@ -601,6 +834,167 @@ function updateNotice() {
   el.noticeAction.hidden = !(state.bundle && state.bundle.size <= 1);
 }
 
+const EXPORT_LABELS = {
+  html: 'Exporting HTML…',
+  pdf: 'Building PDF…',
+  'slides-html': 'Exporting slides…',
+  'slides-pdf': 'Rendering slides to PDF…',
+  pptx: 'Building PowerPoint…',
+};
+
+function updateExportState() {
+  if (!el.exportButton) return;
+
+  const ready = Boolean(state.text && state.bundle) && !state.exporting;
+  el.exportButton.disabled = !ready;
+  el.exportButton.title = state.exporting
+    ? 'Export in progress…'
+    : ready
+      ? 'Export this document'
+      : 'Open a document to export';
+
+  const isMarp = Boolean(state.analysis?.isMarp);
+  const groups = el.exportMenu?.querySelectorAll('[data-export-group]') ?? [];
+  for (const group of groups) {
+    group.hidden = group.dataset.exportGroup === 'marp' ? !isMarp : isMarp;
+  }
+}
+
+function toggleExportMenu() {
+  if (!el.exportMenu || el.exportButton?.disabled) return;
+  const open = el.exportMenu.hidden;
+  el.exportMenu.hidden = !open;
+  el.exportButton.setAttribute('aria-expanded', String(open));
+}
+
+function closeExportMenu() {
+  if (!el.exportMenu || el.exportMenu.hidden) return;
+  el.exportMenu.hidden = true;
+  el.exportButton?.setAttribute('aria-expanded', 'false');
+}
+
+async function handleExportMenuClick(event) {
+  const button = event.target.closest?.('button[data-export]');
+  if (!button) return;
+  closeExportMenu();
+  await runExport(button.dataset.export);
+}
+
+async function runExport(kind) {
+  if (state.exporting || !state.text || !state.bundle) return;
+
+  state.exporting = true;
+  updateExportState();
+  showToast(EXPORT_LABELS[kind] ?? 'Preparing export…');
+
+  try {
+    if (kind === 'html' || kind === 'pdf') {
+      const prepared = await prepareDocumentExport({
+        text: state.text,
+        markdownPath: state.markdownPath,
+        bundle: state.bundle,
+      });
+      if (prepared.missing.length) mergeMissing(prepared.missing);
+
+      const html = buildDocumentHtml({
+        title: prepared.title,
+        bodyHtml: prepared.bodyHtml,
+        css: prepared.css,
+        pdf: kind === 'pdf',
+        pageWidthPx: pdfLayout().contentWidthPx,
+      });
+
+      if (kind === 'html') {
+        downloadBlob(
+          new Blob([html], { type: 'text/html;charset=utf-8' }),
+          exportFileName(state.markdownPath, 'html'),
+        );
+        showToast('HTML exported.');
+      } else {
+        const blob = await documentHtmlToPdfBlob({ html, title: prepared.title });
+        downloadBlob(blob, exportFileName(state.markdownPath, 'pdf'));
+        showToast('PDF exported.');
+      }
+      return;
+    }
+
+    const deck = await prepareDeckExport({
+      text: state.text,
+      markdownPath: state.markdownPath,
+      bundle: state.bundle,
+    });
+    if (deck.missing.length) mergeMissing(deck.missing);
+    if (deck.slides.length === 0) throw new Error('this deck has no slides');
+
+    if (kind === 'slides-html') {
+      const html = buildDeckHtml({
+        title: deck.title,
+        slidesHtml: deck.slides.join('\n'),
+        css: deck.css,
+        width: deck.width,
+        height: deck.height,
+      });
+      downloadBlob(
+        new Blob([html], { type: 'text/html;charset=utf-8' }),
+        exportFileName(state.markdownPath, 'slides.html'),
+      );
+      showToast('HTML slides exported.');
+      return;
+    }
+
+    const images = await renderDeckSlideImages({
+      slides: deck.slides,
+      css: deck.css,
+      width: deck.width,
+      height: deck.height,
+      onProgress: (done, total) => showToast(`Rendering slide ${done}/${total}…`),
+    });
+
+    if (kind === 'slides-pdf') {
+      downloadBlob(
+        deckImagesToPdfBlob({
+          images,
+          width: deck.width,
+          height: deck.height,
+          title: deck.title,
+        }),
+        exportFileName(state.markdownPath, 'slides.pdf'),
+      );
+      showToast('PDF slides exported.');
+    } else {
+      downloadBlob(
+        await deckImagesToPptxBlob({
+          images,
+          width: deck.width,
+          height: deck.height,
+          title: deck.title,
+        }),
+        exportFileName(state.markdownPath, 'pptx'),
+      );
+      showToast('PowerPoint exported.');
+    }
+  } catch (error) {
+    console.error(error);
+    showToast(`Export failed: ${error.message}`, 'error');
+  } finally {
+    state.exporting = false;
+    updateExportState();
+  }
+}
+
+function downloadBlob(blob, filename) {
+  if (!(blob instanceof Blob)) throw new Error('the export produced no data');
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.rel = 'noopener';
+  document.body.append(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+}
+
 function showToast(message, type = 'info') {
   if (!el.toast) return;
   window.clearTimeout(state.toastTimer);
@@ -612,6 +1006,39 @@ function showToast(message, type = 'info') {
     },
     type === 'error' ? 8000 : 4000,
   );
+}
+
+function readSidebarOpen() {
+  try {
+    const stored = localStorage.getItem('mmr-sidebar');
+    if (stored === 'open') return true;
+    if (stored === 'closed') return false;
+  } catch {
+    // Storage can be unavailable; fall back to the viewport default.
+  }
+  return window.matchMedia?.('(min-width: 901px)').matches ?? true;
+}
+
+function applySidebarState() {
+  if (el.sidebar) el.sidebar.classList.toggle('is-hidden', !state.sidebarOpen);
+  if (!el.sidebarToggle) return;
+  el.sidebarToggle.classList.toggle('is-active', state.sidebarOpen);
+  el.sidebarToggle.setAttribute('aria-expanded', String(state.sidebarOpen));
+}
+
+function setSidebarOpen(open, { persist = true } = {}) {
+  state.sidebarOpen = Boolean(open);
+  applySidebarState();
+  if (!persist) return;
+  try {
+    localStorage.setItem('mmr-sidebar', state.sidebarOpen ? 'open' : 'closed');
+  } catch {
+    // Ignoring is fine: the toggle still works for this session.
+  }
+}
+
+function toggleSidebar() {
+  setSidebarOpen(!state.sidebarOpen);
 }
 
 function readTheme() {

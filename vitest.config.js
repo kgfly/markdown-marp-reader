@@ -12,6 +12,8 @@ export default defineConfig({
       include: ['src/**/*.js'],
       exclude: [
         'src/background/**',
+        // Canvas/iframe adapters: covered by the Chrome end-to-end run, not jsdom.
+        'src/core/export-render.js',
         'src/viewer/main.js',
         'src/extension/**',
         'test/**',

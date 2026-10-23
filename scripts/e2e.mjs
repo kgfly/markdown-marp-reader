@@ -9,7 +9,7 @@
  * a specific binary; otherwise common install locations are probed.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -106,6 +106,8 @@ async function main() {
 
   const chromePath = await findChrome();
   const tempDir = await mkdtemp(path.join(os.tmpdir(), 'mmr-e2e-'));
+  const downloads = path.join(tempDir, 'downloads');
+  await mkdir(downloads);
   const docPath = path.join(tempDir, 'doc.md');
   const deckPath = path.join(tempDir, 'deck.md');
   await writeFile(docPath, DOC);
@@ -132,6 +134,46 @@ async function main() {
       { timeout: 15_000 },
     );
     const extensionId = new URL(worker.url()).host;
+
+    const cdp = await browser.target().createCDPSession();
+    await cdp.send('Browser.setDownloadBehavior', {
+      behavior: 'allow',
+      downloadPath: downloads,
+      eventsEnabled: true,
+    });
+
+    async function waitForDownload(pattern, timeout = 120_000) {
+      const deadline = Date.now() + timeout;
+      while (Date.now() < deadline) {
+        const files = await readdir(downloads);
+        const match = files.find(
+          (file) => pattern.test(file) && !file.endsWith('.crdownload'),
+        );
+        if (match) {
+          const file = path.join(downloads, match);
+          const info = await stat(file);
+          if (info.size > 500) return { name: match, path: file, size: info.size };
+        }
+        await new Promise((resolve) => setTimeout(resolve, 250));
+      }
+      throw new Error(
+        `export download ${pattern} timed out (files: ${(await readdir(downloads)).join(', ') || 'none'})`,
+      );
+    }
+
+    async function exportAs(kind, pattern) {
+      await page.waitForFunction(
+        () => !document.querySelector('#export-button').disabled,
+        { timeout: 15_000 },
+      );
+      // Puppeteer's click waits on layout in extension pages; dispatch in-page.
+      await page.evaluate(() => document.querySelector('#export-button').click());
+      await page.evaluate(
+        (value) => document.querySelector(`[data-export="${value}"]`).click(),
+        kind,
+      );
+      return waitForDownload(pattern);
+    }
 
     const page = await browser.newPage();
     page.on('pageerror', (error) => errors.push(`pageerror: ${error.message}`));
@@ -166,6 +208,26 @@ async function main() {
     assert(!docState.docHidden, 'document view visible');
     assert(docState.fileCount === '1', 'file counter updated');
 
+    const menu = await page.evaluate(() => ({
+      docHidden: document
+        .querySelector('[data-export-group="doc"]')
+        .hasAttribute('hidden'),
+      marpHidden: document
+        .querySelector('[data-export-group="marp"]')
+        .hasAttribute('hidden'),
+    }));
+    assert(!menu.docHidden && menu.marpHidden, 'document export options shown');
+
+    const docHtmlFile = await exportAs('html', /\.html$/);
+    const docHtml = await readFile(docHtmlFile.path, 'utf8');
+    assert(docHtml.startsWith('<!doctype html>'), 'document HTML is standalone');
+    assert(docHtml.includes('data:image/png;base64'), 'document image inlined');
+    assert(docHtml.includes('data:font/woff2;base64'), 'KaTeX fonts inlined');
+
+    const docPdfFile = await exportAs('pdf', /\.pdf$/);
+    const docPdf = await readFile(docPdfFile.path);
+    assert(docPdf.subarray(0, 5).toString() === '%PDF-', 'document PDF header');
+
     await (await page.$('#file-input')).uploadFile(deckPath);
     await page.waitForFunction(
       () => document.querySelector('#slide-counter')?.textContent === '1 / 2',
@@ -198,6 +260,35 @@ async function main() {
     await page.waitForFunction(
       () => document.querySelector('#slide-counter')?.textContent === '1 / 2',
       { timeout: 5_000 },
+    );
+
+    const deckMenu = await page.evaluate(() => ({
+      docHidden: document
+        .querySelector('[data-export-group="doc"]')
+        .hasAttribute('hidden'),
+      marpHidden: document
+        .querySelector('[data-export-group="marp"]')
+        .hasAttribute('hidden'),
+    }));
+    assert(deckMenu.docHidden && !deckMenu.marpHidden, 'slide export options shown');
+
+    const deckHtmlFile = await exportAs('slides-html', /\.slides\.html$/);
+    const deckHtml = await readFile(deckHtmlFile.path, 'utf8');
+    assert(
+      (deckHtml.match(/<section id="/g) ?? []).length === 2,
+      'exported deck keeps both slides',
+    );
+    assert(deckHtml.includes('id="deck-next"'), 'exported deck navigates');
+
+    const deckPdfFile = await exportAs('slides-pdf', /\.slides\.pdf$/);
+    const deckPdf = await readFile(deckPdfFile.path);
+    assert(deckPdf.subarray(0, 5).toString() === '%PDF-', 'slides PDF header');
+
+    const pptxFile = await exportAs('pptx', /\.pptx$/);
+    const pptx = await readFile(pptxFile.path);
+    assert(
+      pptx.includes('ppt/presentation.xml') && pptx.includes('ppt/slides/slide2.xml'),
+      'PowerPoint contains both slides',
     );
 
     // Drop a folder: two files, with a relative image next to the Markdown.
@@ -259,7 +350,8 @@ async function main() {
 
     assert(errors.length === 0, `no page errors (${errors.join('; ')})`);
     console.log(
-      `E2E passed in Chrome: Markdown + KaTeX + images, Marp 2-slide navigation, folder drop (extension ${extensionId}).`,
+      `E2E passed in Chrome: Markdown + KaTeX + images, Marp 2-slide navigation, ` +
+        `folder drop, 5 exports (document + deck HTML/PDF/PPTX) (extension ${extensionId}).`,
     );
   } finally {
     await browser.close();

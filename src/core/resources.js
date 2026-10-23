@@ -1,6 +1,6 @@
 import { resolveResourcePath } from './paths.js';
 
-const MEDIA_ATTRIBUTES = [
+export const MEDIA_ATTRIBUTES = [
   ['img[src]', 'src'],
   ['source[src]', 'src'],
   ['video[src]', 'src'],
