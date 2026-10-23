@@ -325,7 +325,15 @@ npm run package -- --skip-build
 via `workflow_dispatch`). It verifies the tag matches `package.json`, then calls
 the shared `package.yml` workflow (full `npm run check` + zip) and publishes the
 zip together with `SHA256SUMS.txt` as a GitHub Release. Release assets also get
-GitHub build-provenance attestations:
+GitHub build-provenance attestations.
+
+A manual **Release** run creates the tag when it does not exist yet: leave the
+tag input empty to tag the selected default-branch commit as
+`v<package.json version>` (bump `version` in `package.json` first), or enter a
+matching `vX.Y.Z` tag. The tag is pushed after `npm run check` and packaging
+succeed, so a failed build never leaves a release tag behind. Existing tags are
+never moved; enter an existing tag explicitly to re-release it. The usual path
+is still to push a tag:
 
 ```sh
 git tag v1.0.0

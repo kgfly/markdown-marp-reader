@@ -4,6 +4,10 @@ name: Release
 # generates a checksum file plus GitHub-native build provenance, and publishes
 # everything as a GitHub Release.
 #
+# A manual run can also create the release tag: leave the tag input empty to
+# tag the selected default-branch commit as v<package.json version>. The tag is
+# created only after the build gate passes. Existing tags are never moved.
+#
 # Publishing the zip to the Chrome Web Store is a manual step -- it needs store
 # credentials, see doc/developer.md "Publishing".
 
@@ -13,8 +17,8 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Tag to release, with leading v (e.g. v1.0.0).'
-        required: true
+        description: 'Tag to release (vX.Y.Z). Leave empty to create v<package.json version>.'
+        required: false
         type: string
 
 permissions:
@@ -28,33 +32,81 @@ jobs:
   meta:
     name: Resolve version
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     outputs:
       tag: ${{ steps.v.outputs.tag }}
       version: ${{ steps.v.outputs.version }}
+      build_ref: ${{ steps.v.outputs.build_ref }}
+      commit: ${{ steps.v.outputs.commit }}
+      create_tag: ${{ steps.v.outputs.create_tag }}
     steps:
       - uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0 # tags, including one that already exists for a re-release
 
       - id: v
         shell: bash
         env:
           INPUT_TAG: ${{ inputs.tag || '' }}
+          REF_TYPE: ${{ github.ref_type }}
           REF_NAME: ${{ github.ref_name }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          tag="${INPUT_TAG:-$REF_NAME}"
+
+          tag="$INPUT_TAG"
+          if [ -z "$tag" ]; then
+            if [ "$REF_TYPE" = "tag" ]; then
+              tag="$REF_NAME"
+            else
+              tag="v$(node -p "require('./package.json').version")"
+            fi
+          fi
+
           if ! echo "$tag" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
             echo "::error::Tag '$tag' is not of the form vX.Y.Z"
             exit 1
           fi
-          version=$(node -p "require('./package.json').version")
+
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            version=$(git show "$tag:package.json" | node -p "JSON.parse(require('fs').readFileSync(0, 'utf8')).version")
+            tag_sha=$(git rev-list -n 1 "refs/tags/$tag")
+            if [ -z "$INPUT_TAG" ] && [ "$REF_TYPE" != "tag" ] && [ "$tag_sha" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag $tag already exists at $tag_sha, not $GITHUB_SHA. Bump package.json or dispatch with that tag explicitly."
+              exit 1
+            fi
+            build_ref="$tag"
+            commit="$tag_sha"
+            create_tag=false
+            echo "Using existing tag $tag ($tag_sha)"
+          else
+            version=$(node -p "require('./package.json').version")
+            if [ "$tag" != "v$version" ]; then
+              echo "::error::Tag $tag does not match package.json version $version; refusing to create it"
+              exit 1
+            fi
+            if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+              echo "::error::Refusing to create $tag from $GITHUB_REF; run from $DEFAULT_BRANCH."
+              exit 1
+            fi
+            build_ref="$GITHUB_SHA"
+            commit="$GITHUB_SHA"
+            create_tag=true
+            echo "Tag $tag does not exist; it will be created at $GITHUB_SHA after the build passes"
+          fi
+
           if [ "$tag" != "v$version" ]; then
             echo "::error::Tag $tag does not match package.json version $version"
             exit 1
           fi
-          echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "version=$version" >> "$GITHUB_OUTPUT"
+          {
+            echo "tag=$tag"
+            echo "version=$version"
+            echo "build_ref=$build_ref"
+            echo "commit=$commit"
+            echo "create_tag=$create_tag"
+          } >> "$GITHUB_OUTPUT"
           echo "Releasing $tag (version $version)"
 
   package:
@@ -62,7 +114,7 @@ jobs:
     uses: ./.github/workflows/package.yml
     with:
       version: ${{ needs.meta.outputs.version }}
-      ref: ${{ needs.meta.outputs.tag }}
+      ref: ${{ needs.meta.outputs.build_ref }}
 
   publish:
     name: Publish GitHub Release
@@ -73,6 +125,13 @@ jobs:
       id-token: write # attestation signing
       attestations: write # record provenance
     steps:
+      # Only needed to create a tag that does not exist yet. It runs before
+      # artifacts are downloaded so checkout cannot clean them away.
+      - uses: actions/checkout@v5
+        if: needs.meta.outputs.create_tag == 'true'
+        with:
+          fetch-depth: 0
+
       - uses: actions/download-artifact@v7
         with:
           name: extension-zip
@@ -98,6 +157,24 @@ jobs:
         uses: actions/attest-build-provenance@v4
         with:
           subject-path: 'dist/*.zip'
+
+      - name: Create release tag
+        if: needs.meta.outputs.create_tag == 'true'
+        shell: bash
+        env:
+          TAG: ${{ needs.meta.outputs.tag }}
+          COMMIT: ${{ needs.meta.outputs.commit }}
+        run: |
+          set -euo pipefail
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "::error::Tag $TAG appeared while the build was running; delete it or release it explicitly."
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "$TAG" "$COMMIT"
+          git push origin "refs/tags/$TAG"
+          echo "Created tag $TAG at $COMMIT"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
